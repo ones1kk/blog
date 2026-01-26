@@ -59,6 +59,10 @@ cover: "./assets/cover.png"
 # ${title}
 
 본문을 작성하세요.
+
+<br> 
+
+오탈자 및 오류 내용을 댓글 또는 메일로 알려주시면, 검토 후 조치하겠습니다.
 EOM
 
 printf 'Created: %s\n' "${post_dir}/index.md"
