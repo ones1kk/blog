@@ -8,3 +8,6 @@
 
 # temp
 tmp/
+
+# local agent instructions
+AGENTS.md
