@@ -289,6 +289,105 @@ primary constructor가 가진 선언적 의미는 사라지고, 단순한 생성
 이 차이는 미묘해 보이지만, 실제로는 결정적이다.
 어노테이션 프로세서는 더 이상 “언어의 의미”를 다루지 못하고, 오직 번역된 결과물의 형태만을 다룬다.
 
+# KSP 
+
+드디어 KSP 섹션까지 왔다. 사실 이 글을 쓰게 된 출발점이 바로 이 지점이다. 로컬에서 빌드 속도를 조금이라도 줄이기 위해 IDE 전용 Gradle을 사용하던 중, 별 생각 없이 테스트 코드를 실행했는데 다음과 같은 오류를 마주했다.
+
+<br> 
+
+```kotlin 
+Kotlin: The provided plugin com.google.devtools.ksp.KotlinSymbolProcessingComponentRegistrar is not compatible with this version of compiler.
+java.lang.AbstractMethodError: Receiver class com.google.devtools.ksp.KotlinSymbolProcessingComponentRegistrar does not define or inherit an implementation of the resolved method 'abstract void registerProjectComponents(com.intellij.mock.MockProject, org.jetbrains.kotlin.config.CompilerConfiguration)' of interface org.jetbrains.kotlin.compiler.plugin.ComponentRegistrar.
+```
+<br> 
+
+처음에는 단순한 버전 충돌이라고 생각했다. 그러나 이 에러 메시지를 조금만 뜯어보면, 단순한 의존성 문제가 아니라 컴파일러 플러그인 계층에서 무언가가 맞지 않다는 사실을 알 수 있다. ComponentRegistrar라는 인터페이스, registerProjectComponents라는 메서드, 그리고 KotlinSymbolProcessingComponentRegistrar라는 구현체는 모두 코틀린 컴파일러 내부 확장 지점과 직접적으로 연결되어 있다.
+
+이 지점에서 질문은 자연스럽게 바뀐다.
+KSP는 단순한 라이브러리가 아니라, 컴파일러에 직접 붙는 플러그인이라는 사실이다.
+
+그리고 이 질문을 따라가다 보면, 자바 어노테이션 프로세싱에서 KAPT를 거쳐 KSP에 이르는 구조적 차이에 도달하게 된다.
+
+
+코틀린에서 중요한 것은 자바 프로세서를 어떻게 돌릴 것인가가 아니라, 코틀린 컴파일러가 해석한 의미를 어떻게 외부에서 활용할 것인가라는 질문이다.
+이 차이가 곧 “Annotation Processing”과 “Symbol Processing”의 차이다.
+
+
+코틀린에서 어노테이션은 부가적인 메타데이터에 가깝다. 선언의 본질은 그 자체의 언어적 의미에 있다. 예를 들어 다음과 같은 코드를 보자. 
+
+<br>  
+
+
+```kotlin
+class User(
+    val name: String?,
+) 
+```
+
+<br> 
+
+이 코드를 읽는 순간, 컴파일러는 단순히 문법이 맞는지 검사하는 것이 아니다. 이 선언이 일반 클래스인지, name이 프로퍼티인지, 이 프로퍼티가 backing field를 가지는지, String? 타입이 nullable인지, 생성자가 primary constructor인지 등을 확정한다.
+
+이러한 판정이 완료된 상태가 바로 “의미 분석이 끝난 상태”이며, KSP가 말하는 “심볼(Symbol)”이란 바로 이 판정 결과를 의미한다.
+
+심볼은 AST가 아니다. AST는 문법 구조를 표현한다. 심볼은 그 문법이 무엇을 의미하는지에 대한 컴파일러의 결론이다. 또한 심볼은 바이트코드도 아니다. 바이트코드는 의미가 낮은 수준으로 분해된 결과물이다. 심볼은 그 중간에 위치하며, 가장 높은 수준의 의미가 유지된 상태다. 
+
+## 동작 
+
+
+이제 코드 레벨로 들어가보자. KSP는 Gradle 플러그인처럼 보이지만, 실제 실행은 kotlinc 내부에서 이루어진다. KSP는 코틀린 컴파일러의 플러그인 API를 통해 등록된다.
+
+진입점은 SymbolProcessorProvider다.
+
+<br> 
+
+
+```kotlin
+class ExampleProcessorProvider : SymbolProcessorProvider {
+    override fun create(
+        environment: SymbolProcessorEnvironment
+    ): SymbolProcessor {
+        return ExampleProcessor(environment)
+    }
+} 
+```
+
+<br>  
+
+
+이 클래스는 우리가 직접 호출하지 않는다. 컴파일러가 시작되면서 KSP 플러그인을 통해 provider를 로딩하고, create()를 호출한다. 이 시점에서 이미 프로젝트의 소스는 파싱되었고, 타입 분석이 끝난 상태다.
+
+실제 로직은 SymbolProcessor에서 구현한다.
+
+<br> 
+
+```kotlin
+val file = environment.codeGenerator.createNewFile(
+    dependencies = Dependencies(
+        aggregating = false,
+        clazz.containingFile!!
+    ),
+    packageName = packageName,
+    fileName = "${className}Generated",
+    extensionName = "kt"
+)
+
+```
+
+<br>
+
+여기서 중요한 것은 Dependencies다. 이 객체는 생성 파일이 어떤 소스 파일에 의존하는지를 명시한다. 이 정보 덕분에 KSP는 증분 컴파일 시 변경된 심볼만 다시 처리할 수 있다.
+
+KAPT에서는 이 의존성 추적이 자바 APT 모델에 종속되어 있었고, 중간 스텁 생성과 javac 실행이라는 단계가 추가로 존재했다. KSP는 이 단계를 제거함으로써 구조 자체를 단순화했다.
+
+
+# AbstractMethodError 에러
+
+AbstractMethodError는 단순한 플러그인 버전 충돌처럼 보였지만 사실은 KSP가 코틀린 컴파일러의 내부 API에 직접 의존하고 있음을 보여주는 엄청난 예시 중 하나였던 것이다.
+ComponentRegistrar 인터페이스가 변경되면, KSP 플러그인 역시 해당 버전에 맞춰 재컴파일되어야 한다.
+
+즉 KSP가 단순한 라이브러리가 아니라, 컴파일러 확장 계층에 속한 도구라는 사실을 증명한다.
+
 
 <br> 
 
