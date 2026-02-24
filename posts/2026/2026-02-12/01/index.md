@@ -195,17 +195,12 @@ poolSize = 50
 <br> 
 
 
-실행 모델 관점에서의 해석
-
 fixed thread pool 모델에서 I/O 대기 상황은 다음과 같은 자원 구조를 가진다.
 
-각 요청은 플랫폼 스레드 하나를 점유한다.
-
-스레드는 sleep 동안 OS 레벨에서 WAITING 상태로 전환된다.
-
-CPU는 해당 스레드를 실행하지 않지만, 스레드는 메모리를 점유한다.
-
-동시 대기 수는 thread pool size로 제한된다.
+1. 각 요청은 플랫폼 스레드 하나를 점유한다.
+2. 스레드는 sleep 동안 OS 레벨에서 WAITING 상태로 전환된다.
+3. CPU는 해당 스레드를 실행하지 않지만, 스레드는 메모리를 점유한다.
+4. 동시 대기 수는 thread pool size로 제한된다.
 
 즉, 이 모델은 “대기 슬롯”을 플랫폼 스레드로 구현한 것이다.
 
@@ -218,8 +213,6 @@ CPU는 해당 스레드를 실행하지 않지만, 스레드는 메모리를 점
 
 
 실제로 poolSize를 200, 500, 1000으로 확장하면 처리 시간은 더 줄어들겠지만, 시스템은 점점 비효율적으로 변한다. OS 스케줄러와 JVM이 관리해야 할 스레드 수가 기하급수적으로 증가하기 때문이다.
-
-병목은 어디에 존재하는가?
 
 이 실험에서 CPU 사용률을 관찰하면 거의 낮은 수준에 머문다. 즉, CPU는 병목이 아니다.
 
@@ -461,14 +454,13 @@ val cpuExecutor = Executors.newFixedThreadPool(
     Runtime.getRuntime().availableProcessors()
 )
 
-fun processTask(task: Task) {
+val futures = tasks.map { task ->
     CompletableFuture
-    .supplyAsync({ performIo(task) }, ioExecutor)
-    .thenApplyAsync({ response ->
-        performCpuComputation(response)
-    }, cpuExecutor)
-    .join()
+        .supplyAsync({ performIo(task) }, ioExecutor)
+        .thenApplyAsync({ response -> performCpuComputation(response) }, cpuExecutor)
 }
+
+futures.forEach { it.join() }
 ```
 
 <br> 
@@ -506,7 +498,6 @@ fun processTask(task: Task) {
 
 이 과정을 거치지 않은 동시성 증가는 단기적인 처리량 개선처럼 보일 수 있으나, 결국 다른 자원에서 더 큰 비용을 치르게 만든다. 혼합 워크로드는 복잡해 보이지만, 본질은 단순하다. 자원의 속도 차이를 인정하고, 그 차이를 완충하는 구조를 설계하는 것이다.
 
-여기까지가 I/O 이후 CPU 연산이 직렬로 결합된 구조적 혼합 워크로드에 대한 최종 결론이다.
 
 <br> 
 
